@@ -1,0 +1,278 @@
+model Barry
+uses "mmsystem"
+uses "mmodbc"
+uses "mmxprs"
+
+! declare variables
+declarations
+	NumHubs:			integer
+	NumNodes: 			integer
+	NumArcs:			integer
+	NumCommodities:		integer
+	ADMCost:			real
+	BiArcCapacity:		real
+	ADMUsageCost:		real
+	BBDXUsageCost:		real
+	NumCycles:			integer
+	NumHubToHub:		integer
+end-declarations
+writeln ("1) Declarations are done.")
+
+! read data from excel
+initializations from "mmodbc.odbc: barry.xls"
+	NumHubs as 			"[z2:z3]"
+	NumNodes as			"[z5:z6]"
+	NumArcs as			"[z8:z9]"
+	NumCommodities as	"[z11:z12]"
+	ADMCost as			"[z14:z15]"
+	BiArcCapacity as	"[z17:z18]"
+	ADMUsageCost as 	"[z20:z21]"
+	BBDXUsageCost as	"[z23:z24]"
+	NumCycles as		"[z26:z27]"
+	NumHubToHub as		"[z29:z30]"
+end-initializations
+writeln ("2) Values are read from excel.")
+
+! declare other variables for constraints
+declarations
+	Hubs = 				1..NumHubs
+	Nodes =	 			1..NumNodes
+	Arcs = 				1..NumArcs
+	Commodities = 		1..NumCommodities
+	Cycles = 			1..NumCycles
+	HubToHub = 			1..NumHubToHub
+	Transmissions = 	1..NumCommodities
+	
+	NodeType :	 		array(Nodes) of integer
+	NodeHubNum : 		array(Nodes) of integer
+	NodeCycleNum : 		array(Nodes) of integer
+	NodeRingNum : 		array(Nodes) of integer
+	NodeDescript : 		array(Nodes) of string
+			
+	ArcType : 			array(Arcs) of integer
+	ArcFrom : 			array(Arcs) of integer
+	ArcTo : 			array(Arcs) of integer
+	ArcCost : 			array(Arcs) of real
+	ArcHubFrom :		array(Arcs) of integer
+	ArcCycleFrom : 		array(Arcs) of integer
+	ArcRingFrom : 		array(Arcs) of integer
+	ArcHubTo :	 		array(Arcs) of integer
+	ArcCycleTo : 		array(Arcs) of integer
+	ArcRingTo :		 	array(Arcs) of integer
+	ArcDescript : 		array(Arcs) of string
+			
+	CommodityOrigin :		array(Commodities) of integer
+	CommodityDestin : 		array(Commodities) of integer
+	CommodityDemand :		array(Commodities) of integer
+	
+	HubName :				array(Hubs) of string
+	HubBBDX : 				array(Hubs) of integer
+	HubCycles :				array(Hubs) of integer
+		
+	CycleHubs :				array(Cycles) of string
+	CycleRings : 			array(Cycles) of integer
+	
+	TransmissionOrigin : 	array(Transmissions) of string
+	TransmissionDestin : 	array(Transmissions) of string
+	TransmissionDemand :	array(Transmissions) of integer
+		
+	HubToHub1 :				array(HubToHub) of string
+	HubToHub2 : 			array(HubToHub) of string
+	HubToHubCost :			array(HubToHub) of real
+	
+	end-declarations
+writeln ("3) Other variables are declared for constraints.")
+
+! Read all informations from excel
+initializations from "mmodbc.odbc:barry.xls"
+	[NodeType, NodeHubNum, NodeCycleNum, NodeRingNum, NodeDescript] as "NodeTable"
+	[ArcType, ArcFrom, ArcTo, ArcCost, ArcHubFrom, ArcCycleFrom, ArcRingFrom, ArcHubTo, ArcCycleTo, ArcRingTo, ArcDescript] as "ArcTable"
+	[CommodityOrigin, CommodityDestin, CommodityDemand] as "CommodityTable"
+	[HubName, HubBBDX, HubCycles] as "HubTable"
+	[CycleHubs, CycleRings] as "CycleTable"
+	[TransmissionOrigin, TransmissionDestin, TransmissionDemand] as "TransmissionTable"
+	[HubToHub1, HubToHub2, HubToHubCost] as "HubToHubTable"
+	end-initializations
+writeln ("4) All informations are read from excel.")
+
+! Define decision variables and objective function
+declarations
+	object : 			linctr
+	ADMNode : 			array(Nodes) of mpvar 				! One binary variable per Type 1 node (each valid hub/ring combination), 
+															! to show whether an ADM should be installed there or not
+	CommodityFlow : 	array(Arcs, Commodities) of mpvar 	! One non-negative variable per commodity/arc pair 
+															! to show how much of each commodity flows from the arc’s start node to the arc’s end node
+end-declarations
+
+forall (i in Nodes) do
+	if (NodeType(i) = 1) then
+	create (ADMNode(i))
+	ADMNode(i) is_binary  									! One binary variable per Type 1 node (each valid hub/ring combination), 
+															! to show whether an ADM should be installed there or not
+	end-if
+end-do
+writeln ("5) Decision variables and objective function are Defined.")
+
+! Constraints
+! The total bi-directional flow on an arc (the sum of the two directions) can be no more than the bi-directional capacity.
+forall (i in Arcs, j in Arcs) do
+	if(ArcFrom(i) = ArcTo(j) and ArcTo(i) = ArcFrom(j) and i < j) then
+		if(ArcType(i) = 2 and ArcType(j) = 2) then
+		sum(a in Commodities) CommodityFlow(i,a) + sum(b in Commodities) CommodityFlow(j,b) <= BiArcCapacity
+		end-if
+	end-if
+end-do
+
+! No commodities may flow on a Type 0 arc unless their destination is at that hub.
+forall (i in Arcs, j in Commodities) do
+	if(ArcType(i) = 0) then
+		if(ArcHubTo(i) <> CommodityDestin(j)) then
+		CommodityFlow(i,j) = 0
+		end-if
+	end-if
+end-do
+
+! No commodities may flow on a Type 1 arc unless their origin is at that hub.
+forall (i in Arcs, j in Commodities) do
+	if(ArcType(i) = 1) then
+		if(ArcHubFrom(i) <> CommodityOrigin(j)) then
+		CommodityFlow(i,j) = 0
+		end-if
+	end-if
+end-do
+
+! No commodities may flow on a Type 0 arc unless an ADM is installed on that ring at that hub.
+forall (i in Arcs, j in Commodities) do
+	if (ArcType(i)= 0) then
+		CommodityFlow(i,j) <= ADMCost * ADMNode(ArcFrom(i))
+	end-if
+end-do
+
+! No commodities may flow on a Type 1 arc unless an ADM is installed on that ring at that hub.
+forall (i in Arcs, j in Commodities) do
+	if (ArcType(i) = 1) then
+		CommodityFlow(i,j) <= ADMCost * ADMNode(ArcTo(i))
+	end-if
+end-do
+
+! No commodities may flow on a Type 3 arc unless an ADM is installed at that hub on both rings.
+forall (i in Arcs, j in Commodities) do
+	if(ArcType(i) = 3) then
+		CommodityFlow(i,j) <= ADMCost * ADMNode(ArcFrom(i))
+		CommodityFlow(i,j) <= ADMCost * ADMNode(ArcTo(i))
+	end-if
+end-do
+
+! The total flow of each commodity into its destination hub (i.e., into a Type 0 node on Type 0 arcs) must equal the demand for that commodity.
+forall (i in Commodities) do
+	sum(j in Arcs | ArcType(j) = 0 and CommodityDestin(i) = ArcTo(j))  CommodityFlow(j,i) = CommodityDemand(i)
+end-do
+
+! The total flow of each commodity out of its origin hub (i.e., out of a Type 0 node on Type 1 arcs) must equal the demand for that commodity.
+forall (i in Commodities) do
+	sum(j in Arcs | ArcType(j) = 1 and CommodityOrigin(i) = ArcFrom(j))  CommodityFlow(j,i) = CommodityDemand(i)
+end-do
+
+! The total flow of each commodity into each Type 1 node must equal the total flow of that commodity out of that Type 1 node
+forall (i in Nodes, j in Commodities) do
+	if (NodeType(i) = 1) then
+		sum(a in Arcs | ArcTo(a) = i)  CommodityFlow(a,j) - sum(b in Arcs | ArcFrom(b) = i)  CommodityFlow(b,j)= 0
+	end-if
+end-do
+
+writeln ("6) Constraints are set up.")
+
+writeln ("7) Additional Constraints will be added.")
+
+! Symmetry breaking constraints
+forall(i in Nodes, j in Nodes) do
+    if(NodeType(i) = 1 and NodeType(j) = 1 and NodeHubNum(i) = NodeHubNum(j) and NodeRingNum(i) > NodeRingNum(j)) then
+        if(NodeHubNum(i) = 4 or NodeHubNum(i) = 3 or NodeHubNum(i) = 6) then
+            ADMNode(i) >= ADMNode(j)
+        end-if
+    end-if
+end-do
+
+! Analyging Demand of Origin & Destination among Hub
+forall (i in Cycles) do
+	if(i = 1) then		! Cycle 1:  Hub A, Hub I, Hub K, Hub M, Hub Q
+		sum(j in Nodes| NodeHubNum(j) = 1 and NodeCycleNum(j) = i) ADMNode(j) >= 2
+		sum(j in Nodes| NodeHubNum(j)= 9 and NodeCycleNum(j) = i) ADMNode(j) >= 2
+		sum(j in Nodes| NodeHubNum(j)= 11 and NodeCycleNum(j) = i) ADMNode(j) >= 2
+		sum(j in Nodes| NodeHubNum(j)= 13 and NodeCycleNum(j) = i) ADMNode(j) >= 2
+		sum(j in Nodes| NodeHubNum(j)= 17 and NodeCycleNum(j) =i) ADMNode(j) >= 2
+	end-if  
+	if(i = 2) then		! Cycle 2:  Hub G, Hub M, Hub O, Hub Q
+		sum(j in Nodes| NodeHubNum(j) = 7 and NodeCycleNum(j) = i) ADMNode(j) >= 2
+		sum(j in Nodes| NodeHubNum(j)= 13 and NodeCycleNum(j) = i) ADMNode(j) >= 3
+		sum(j in Nodes| NodeHubNum(j) = 15 and NodeCycleNum(j) = i) ADMNode(j) >= 2
+		sum(j in Nodes| NodeHubNum(j)= 17 and NodeCycleNum(j) = i) ADMNode(j) >= 3
+	end-if
+	if(i = 3) then		! Cycle 3:  Hub I, Hub J, Hub K
+		sum(j in Nodes| NodeHubNum(j)= 9 and NodeCycleNum(j) = i) ADMNode(j) >= 1
+		sum(j in Nodes| NodeHubNum(j) = 10 and NodeCycleNum(j) = i) ADMNode(j) >= 1
+		sum(j in Nodes| NodeHubNum(j)= 11 and NodeCycleNum(j) = i) ADMNode(j) >= 1
+	end-if
+end-do
+
+! Decomposition Heuristics
+! cut flow constraint 1
+sum(i in Commodities |(((NodeHubNum(CommodityOrigin(i)) >= 8) and (NodeHubNum(CommodityOrigin(i)) <= 12) or (NodeHubNum(CommodityOrigin(i)) = 1) or (NodeHubNum(CommodityOrigin(i)) = 2) or (NodeHubNum(CommodityOrigin(i)) = 4) or (NodeHubNum(CommodityOrigin(i)) = 6) or (NodeHubNum(CommodityOrigin(i)) = 14) or (NodeHubNum(CommodityOrigin(i)) = 16) or (NodeHubNum(CommodityOrigin(i)) = 20) or (NodeHubNum(CommodityOrigin(i)) = 21)) and ((NodeHubNum(CommodityDestin(i)) = 3)) or (NodeHubNum(CommodityDestin(i)) = 5) or (NodeHubNum(CommodityDestin(i)) = 7) or (NodeHubNum(CommodityDestin(i)) = 15) or (NodeHubNum(CommodityDestin(i)) = 18) or (NodeHubNum(CommodityDestin(i)) = 19)) or (((NodeHubNum(CommodityOrigin(i)) = 3) or (NodeHubNum(CommodityOrigin(i)) = 5) or (NodeHubNum(CommodityOrigin(i)) = 7) or (NodeHubNum(CommodityOrigin(i)) = 15) or (NodeHubNum(CommodityOrigin(i)) = 18) or (NodeHubNum(CommodityOrigin(i)) = 19)) and ((NodeHubNum(CommodityDestin(i)) = 1) or (NodeHubNum(CommodityDestin(i)) = 2) or (NodeHubNum(CommodityDestin(i)) = 4) or (NodeHubNum(CommodityDestin(i)) = 6) or (NodeHubNum(CommodityDestin(i)) = 14) or (NodeHubNum(CommodityDestin(i)) = 16) or (NodeHubNum(CommodityDestin(i)) = 20) or (NodeHubNum(CommodityDestin(i)) = 21) or ((NodeHubNum(CommodityDestin(i)) >= 8) and (NodeHubNum(CommodityDestin(i)) <= 12)))))
+	CommodityDemand(i)<=2*BiArcCapacity*sum(j in Nodes| NodeType(j) = 1 and NodeHubNum(j)= 13 or NodeHubNum(j)= 17)(ADMNode(j))
+	
+! cut flow constraint 2
+sum(i in Commodities |(((NodeHubNum(CommodityOrigin(i)) = 7) or (NodeHubNum(CommodityOrigin(i)) = 8) or ((NodeHubNum(CommodityOrigin(i)) >= 1) and (NodeHubNum(CommodityOrigin(i)) <= 5)) or ((NodeHubNum(CommodityOrigin(i)) >= 12) and (NodeHubNum(CommodityOrigin(i)) <= 15)) or ((NodeHubNum(CommodityOrigin(i)) >= 17) and (NodeHubNum(CommodityOrigin(i)) <= 19))) and ((NodeHubNum(CommodityDestin(i)) = 6) or (NodeHubNum(CommodityDestin(i)) = 10) or (NodeHubNum(CommodityDestin(i)) = 16) or (NodeHubNum(CommodityDestin(i)) = 20) or (NodeHubNum(CommodityDestin(i)) = 21))) or (((NodeHubNum(CommodityOrigin(i)) = 6) or (NodeHubNum(CommodityOrigin(i)) = 10) or (NodeHubNum(CommodityOrigin(i)) = 16) or (NodeHubNum(CommodityOrigin(i)) = 20) or (NodeHubNum(CommodityOrigin(i)) = 21)) and ((NodeHubNum(CommodityDestin(i)) = 7) or (NodeHubNum(CommodityDestin(i)) = 8) or ((NodeHubNum(CommodityDestin(i)) >= 1) and (NodeHubNum(CommodityDestin(i)) <= 5)) or ((NodeHubNum(CommodityDestin(i)) >= 12) and (NodeHubNum(CommodityDestin(i)) <= 15)) or ((NodeHubNum(CommodityDestin(i)) >= 17) and (NodeHubNum(CommodityDestin(i)) <= 19)))))
+	CommodityDemand(i)<=2*BiArcCapacity*sum(j in Nodes| NodeType(j) = 1 and NodeHubNum(j)= 9 or NodeHubNum(j)= 11)(ADMNode(j))
+	
+! Another Decomposition Heuristics
+! Minimize the flow cost
+! minimize constraint 1
+sum(i in Commodities |(((NodeHubNum(CommodityOrigin(i)) = 1) or (NodeHubNum(CommodityOrigin(i)) = 2) or (NodeHubNum(CommodityOrigin(i)) = 4) or (NodeHubNum(CommodityOrigin(i)) = 8)) and ((NodeHubNum(CommodityDestin(i)) = 15) or (NodeHubNum(CommodityDestin(i)) = 19))) or (((NodeHubNum(CommodityOrigin(i)) = 15) or (NodeHubNum(CommodityOrigin(i)) = 19)) and ((NodeHubNum(CommodityDestin(i)) = 1) or (NodeHubNum(CommodityDestin(i)) = 2) or (NodeHubNum(CommodityDestin(i)) = 4) or (NodeHubNum(CommodityDestin(i)) = 8))))
+	CommodityDemand(i) <= 2*BiArcCapacity*sum(j in Nodes| NodeType(j) = 1 and NodeHubNum(j) = 17)(ADMNode(j))
+
+! minimize constraint 2
+sum(i in Commodities |(((NodeHubNum(CommodityOrigin(i)) = 2) or (NodeHubNum(CommodityOrigin(i)) = 12) or (NodeHubNum(CommodityOrigin(i)) = 14)) and ((NodeHubNum(CommodityDestin(i)) = 20) or (NodeHubNum(CommodityDestin(i)) = 16))) or (((NodeHubNum(CommodityOrigin(i)) = 20) or (NodeHubNum(CommodityOrigin(i)) = 16)) and ((NodeHubNum(CommodityDestin(i)) = 2) or (NodeHubNum(CommodityDestin(i)) = 12) or (NodeHubNum(CommodityDestin(i)) = 14))))
+	CommodityDemand(i) <= 2*BiArcCapacity*sum(j in Nodes| NodeType(j) = 1 and NodeHubNum(j) = 9)(ADMNode(j))
+	
+! minimize constraint 3
+sum(i in Commodities |
+	((((NodeHubNum(CommodityOrigin(i)) = 14) or (NodeHubNum(CommodityOrigin(i)) = 9) or (NodeHubNum(CommodityOrigin(i)) = 11)) and ((NodeHubNum(CommodityDestin(i)) = 5) or (NodeHubNum(CommodityDestin(i)) = 7) or (NodeHubNum(CommodityDestin(i)) = 18) or (NodeHubNum(CommodityDestin(i)) = 3))) or (((NodeHubNum(CommodityOrigin(i)) = 5) or (NodeHubNum(CommodityOrigin(i)) = 7)or (NodeHubNum(CommodityOrigin(i)) = 18)or (NodeHubNum(CommodityOrigin(i)) = 3)) and ((NodeHubNum(CommodityDestin(i)) = 14) or (NodeHubNum(CommodityDestin(i)) = 9) or (NodeHubNum(CommodityDestin(i)) = 11)))or (((NodeHubNum(CommodityOrigin(i)) = 3) or (NodeHubNum(CommodityOrigin(i)) = 5) or (NodeHubNum(CommodityOrigin(i)) = 7)or (NodeHubNum(CommodityOrigin(i)) = 18)) and ((NodeHubNum(CommodityDestin(i)) = 6) or (NodeHubNum(CommodityDestin(i)) = 10) or (NodeHubNum(CommodityDestin(i)) = 21))) or (((NodeHubNum(CommodityOrigin(i)) = 6) or (NodeHubNum(CommodityOrigin(i)) = 10)or (NodeHubNum(CommodityOrigin(i)) = 21)) and ((NodeHubNum(CommodityDestin(i)) = 3) or (NodeHubNum(CommodityDestin(i)) = 5) or (NodeHubNum(CommodityDestin(i)) = 7) or (NodeHubNum(CommodityDestin(i)) = 18)))))
+	CommodityDemand(i) <= 2*BiArcCapacity*sum(j in Nodes| NodeType(j) = 1 and NodeHubNum(j) = 13)(ADMNode(j))
+	
+! minimize constraint 4
+sum(i in Commodities |
+	(((NodeHubNum(CommodityOrigin(i)) = 1) or (NodeHubNum(CommodityOrigin(i)) = 4) or (NodeHubNum(CommodityOrigin(i)) = 8) or (NodeHubNum(CommodityOrigin(i)) = 17) or (NodeHubNum(CommodityOrigin(i)) = 13)) and ((NodeHubNum(CommodityDestin(i)) = 6) or (NodeHubNum(CommodityDestin(i)) = 10) or (NodeHubNum(CommodityDestin(i)) = 21))) or (((NodeHubNum(CommodityOrigin(i)) = 6) or (NodeHubNum(CommodityOrigin(i)) = 10)or (NodeHubNum(CommodityOrigin(i)) = 21)) and ((NodeHubNum(CommodityDestin(i)) = 1) or (NodeHubNum(CommodityDestin(i)) = 4) or (NodeHubNum(CommodityDestin(i)) = 8) or (NodeHubNum(CommodityDestin(i)) = 17) or (NodeHubNum(CommodityDestin(i)) = 13))) or (((NodeHubNum(CommodityOrigin(i)) = 3) or (NodeHubNum(CommodityOrigin(i)) = 5) or (NodeHubNum(CommodityOrigin(i)) = 7)or (NodeHubNum(CommodityOrigin(i)) = 18)) and ((NodeHubNum(CommodityDestin(i)) = 6) or (NodeHubNum(CommodityDestin(i)) = 10) or (NodeHubNum(CommodityDestin(i)) = 21))) or (((NodeHubNum(CommodityOrigin(i)) = 6) or (NodeHubNum(CommodityOrigin(i)) = 10)or (NodeHubNum(CommodityOrigin(i)) = 21)) and ((NodeHubNum(CommodityDestin(i)) = 3) or (NodeHubNum(CommodityDestin(i)) = 5) or (NodeHubNum(CommodityDestin(i)) = 7) or (NodeHubNum(CommodityDestin(i)) = 18))))
+	CommodityDemand(i) <= 2*BiArcCapacity*sum(j in Nodes| NodeType(j) = 1 and NodeHubNum(j) = 11)(ADMNode(j))
+	
+! The model begins
+writeln("")
+writeln ("Start the optimization iterations.")	
+
+! Set up objective function
+! Calculate the cost of arcs with commodities
+forall (i in Arcs) do
+	object += sum(j in Commodities)  CommodityFlow(i,j) * ArcCost(i)
+end-do
+
+! Calculate the installing ADM cost
+forall (i in Nodes) do
+	object += ADMNode(i) * ADMCost
+end-do
+
+minimize(object)
+
+writeln("")
+writeln("Complete the optimization iterations.")
+
+writeln("Total cost = ", getobjval) 	! print the optimal cost 
+writeln("")
+writeln("ADM Nodes are: ")				! print the ADM nodes
+writeln("")
+
+forall(i in Nodes) do
+    if(getsol(ADMNode(i))>0) then
+        writeln(NodeDescript(i), " ", getsol(ADMNode(i)), " ", i)
+    end-if
+end-do   
+
+end-model
